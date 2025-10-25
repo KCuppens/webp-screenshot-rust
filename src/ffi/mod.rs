@@ -393,6 +393,7 @@ fn convert_capture_options(opts: &capture_options) -> CaptureConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CStr;
 
     #[test]
     fn test_c_api_create_destroy() {

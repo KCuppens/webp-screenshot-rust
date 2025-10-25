@@ -115,7 +115,7 @@ impl PixelFormatConverter for DefaultPixelConverter {
 
 #[cfg(feature = "simd")]
 pub mod simd_converter {
-    use super::PixelFormatConverter;
+    use super::{PixelFormatConverter, DefaultPixelConverter};
 
     /// SIMD-optimized pixel format converter
     pub struct SimdPixelConverter;
@@ -123,8 +123,6 @@ pub mod simd_converter {
     impl PixelFormatConverter for SimdPixelConverter {
         #[cfg(target_arch = "x86_64")]
         fn convert_bgra_to_rgba(&self, data: &mut [u8]) {
-            use std::arch::x86_64::*;
-
             unsafe {
                 // Check for AVX2 support
                 if is_x86_feature_detected!("avx2") {

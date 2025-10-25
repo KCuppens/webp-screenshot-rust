@@ -735,7 +735,7 @@ mod tests {
     #[test]
     fn test_zero_copy_support() {
         let optimizer = ZeroCopyOptimizer::new();
-        println!("Zero-copy supported: {}", optimizer.is_supported());
+        println!("Zero-copy supported: {}", ZeroCopyOptimizer::is_supported());
         println!("Zero-copy enabled: {}", optimizer.is_enabled());
     }
 

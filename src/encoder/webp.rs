@@ -187,7 +187,7 @@ mod tests {
         let mut config = WebPConfig::default();
         assert!(config.validate().is_ok());
 
-        config.quality = 101.0;
+        config.quality = 101;
         assert!(config.validate().is_err());
     }
 
@@ -199,6 +199,7 @@ mod tests {
             width: 100,
             height: 100,
             format: PixelFormat::RGBA8,
+            stride: 100 * 4,
         };
 
         let config = WebPConfig::default();
