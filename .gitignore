@@ -1,0 +1,38 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo lock file (uncomment if this is a library)
+# Cargo.lock
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Debug screenshots
+debug_screenshots/
+*.webp
+*.png
+*.jpg
+
+# Benchmark results
+target/criterion/
+
+# Test artifacts
+*.profraw
+*.profdata
+
+# Windows reserved names
+nul
+CON
+PRN
+AUX
+CLOCK$
