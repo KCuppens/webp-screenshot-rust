@@ -1,0 +1,395 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+    steps:
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: Release ${{ github.ref }}
+        draft: false
+        prerelease: false
+
+  build-release:
+    name: Build Release
+    needs: create-release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: libwebp_screenshot_rust.so
+            asset_name: libwebp-screenshot-rust-linux-x86_64.so
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: webp_screenshot_rust.dll
+            asset_name: webp-screenshot-rust-windows-x86_64.dll
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: libwebp_screenshot_rust.dylib
+            asset_name: libwebp-screenshot-rust-macos-x86_64.dylib
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo index
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo build
+      uses: actions/cache@v4
+      with:
+        path: target
+        key: ${{ runner.os }}-cargo-build-release-${{ hashFiles('**/Cargo.lock') }}
+
+    # Linux-specific dependencies
+    - name: Install Linux dependencies
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libx11-dev \
+          libxrandr-dev \
+          libxfixes-dev \
+          libxdamage-dev \
+          libxext-dev \
+          libxcomposite-dev \
+          pkg-config
+
+    # Build release binary
+    - name: Build release
+      run: cargo build --release --all-features --target ${{ matrix.target }}
+
+    # Build C API library
+    - name: Build C API library
+      run: |
+        if [ "$RUNNER_OS" == "Linux" ]; then
+          cargo rustc --release --features c-api --crate-type cdylib --target ${{ matrix.target }}
+        elif [ "$RUNNER_OS" == "Windows" ]; then
+          cargo rustc --release --features c-api --crate-type cdylib --target ${{ matrix.target }}
+        elif [ "$RUNNER_OS" == "macOS" ]; then
+          cargo rustc --release --features c-api --crate-type cdylib --target ${{ matrix.target }}
+        fi
+      shell: bash
+
+    # Package artifacts
+    - name: Package artifacts
+      run: |
+        mkdir -p release-package
+
+        # Copy library
+        if [ "$RUNNER_OS" == "Linux" ]; then
+          cp target/${{ matrix.target }}/release/libwebp_screenshot_rust.so release-package/
+        elif [ "$RUNNER_OS" == "Windows" ]; then
+          cp target/${{ matrix.target }}/release/webp_screenshot_rust.dll release-package/
+          cp target/${{ matrix.target }}/release/webp_screenshot_rust.lib release-package/
+        elif [ "$RUNNER_OS" == "macOS" ]; then
+          cp target/${{ matrix.target }}/release/libwebp_screenshot_rust.dylib release-package/
+        fi
+
+        # Copy headers and examples
+        cp -r src/ffi/*.h release-package/ 2>/dev/null || true
+        cp examples/* release-package/ 2>/dev/null || true
+        cp README.md LICENSE release-package/
+
+        # Create archive
+        if [ "$RUNNER_OS" == "Windows" ]; then
+          7z a webp-screenshot-rust-${{ matrix.target }}.zip release-package/*
+        else
+          tar -czf webp-screenshot-rust-${{ matrix.target }}.tar.gz -C release-package .
+        fi
+      shell: bash
+
+    # Upload library asset
+    - name: Upload library asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ needs.create-release.outputs.upload_url }}
+        asset_path: ./target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+        asset_name: ${{ matrix.asset_name }}
+        asset_content_type: application/octet-stream
+
+    # Upload archive asset
+    - name: Upload archive asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ needs.create-release.outputs.upload_url }}
+        asset_path: ./webp-screenshot-rust-${{ matrix.target }}.${{ runner.os == 'Windows' && 'zip' || 'tar.gz' }}
+        asset_name: webp-screenshot-rust-${{ matrix.target }}.${{ runner.os == 'Windows' && 'zip' || 'tar.gz' }}
+        asset_content_type: application/octet-stream
+
+  publish-crate:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    needs: build-release
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install Linux dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libx11-dev \
+          libxrandr-dev \
+          libxfixes-dev \
+          libxdamage-dev \
+          libxext-dev \
+          libxcomposite-dev \
+          pkg-config
+
+    - name: Login to crates.io
+      run: cargo login ${{ secrets.CRATES_IO_TOKEN }}
+
+    - name: Publish to crates.io
+      run: cargo publish --all-features
+
+  build-cross-platform:
+    name: Cross Platform Builds
+    runs-on: ubuntu-latest
+    needs: create-release
+    strategy:
+      matrix:
+        target:
+          - aarch64-unknown-linux-gnu
+          - aarch64-apple-darwin
+          - x86_64-pc-windows-gnu
+          - i686-pc-windows-gnu
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - name: Install cross
+      uses: taiki-e/install-action@cross
+
+    - name: Cross compile
+      run: cross build --release --features c-api --target ${{ matrix.target }}
+
+    - name: Package cross-compiled binary
+      run: |
+        mkdir -p cross-release
+
+        if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+          cp target/${{ matrix.target }}/release/webp_screenshot_rust.dll cross-release/
+          cp target/${{ matrix.target }}/release/webp_screenshot_rust.lib cross-release/ 2>/dev/null || true
+          7z a webp-screenshot-rust-${{ matrix.target }}.zip cross-release/*
+          asset_name="webp-screenshot-rust-${{ matrix.target }}.zip"
+          asset_path="./webp-screenshot-rust-${{ matrix.target }}.zip"
+        else
+          cp target/${{ matrix.target }}/release/libwebp_screenshot_rust.so cross-release/ 2>/dev/null || true
+          cp target/${{ matrix.target }}/release/libwebp_screenshot_rust.dylib cross-release/ 2>/dev/null || true
+          tar -czf webp-screenshot-rust-${{ matrix.target }}.tar.gz -C cross-release .
+          asset_name="webp-screenshot-rust-${{ matrix.target }}.tar.gz"
+          asset_path="./webp-screenshot-rust-${{ matrix.target }}.tar.gz"
+        fi
+
+        echo "asset_name=$asset_name" >> $GITHUB_ENV
+        echo "asset_path=$asset_path" >> $GITHUB_ENV
+
+    - name: Upload cross-compiled asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ needs.create-release.outputs.upload_url }}
+        asset_path: ${{ env.asset_path }}
+        asset_name: ${{ env.asset_name }}
+        asset_content_type: application/octet-stream
+
+  generate-bindings:
+    name: Generate Language Bindings
+    runs-on: ubuntu-latest
+    needs: create-release
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libx11-dev \
+          libxrandr-dev \
+          libxfixes-dev \
+          pkg-config \
+          python3 \
+          python3-pip \
+          nodejs \
+          npm
+
+    - name: Install bindgen
+      run: cargo install cbindgen
+
+    - name: Generate C headers
+      run: |
+        mkdir -p bindings/c
+        cbindgen --config cbindgen.toml --crate webp-screenshot-rust --output bindings/c/webp_screenshot.h
+
+    - name: Install Python binding tools
+      run: |
+        pip3 install cffi
+
+    - name: Generate Python bindings
+      run: |
+        mkdir -p bindings/python
+        # Generate Python bindings using cffi
+        cat > bindings/python/webp_screenshot.py << 'EOF'
+        """
+        Python bindings for webp-screenshot-rust
+
+        Auto-generated bindings using cffi
+        """
+
+        import cffi
+        import os
+
+        ffi = cffi.FFI()
+
+        # Load header definitions
+        ffi.cdef("""
+            // Add C API definitions here
+            typedef struct webp_screenshot_handle webp_screenshot_handle;
+
+            webp_screenshot_handle* webp_screenshot_create(void);
+            void webp_screenshot_destroy(webp_screenshot_handle* handle);
+
+            // Add more function declarations as needed
+        """)
+
+        # Load the library
+        lib_path = os.path.join(os.path.dirname(__file__), '..', '..', 'target', 'release')
+        if os.name == 'nt':
+            lib = ffi.dlopen(os.path.join(lib_path, 'webp_screenshot_rust.dll'))
+        else:
+            lib = ffi.dlopen(os.path.join(lib_path, 'libwebp_screenshot_rust.so'))
+
+        class WebPScreenshot:
+            def __init__(self):
+                self.handle = lib.webp_screenshot_create()
+                if not self.handle:
+                    raise RuntimeError("Failed to create WebP screenshot instance")
+
+            def __del__(self):
+                if hasattr(self, 'handle') and self.handle:
+                    lib.webp_screenshot_destroy(self.handle)
+        EOF
+
+    - name: Generate Node.js bindings
+      run: |
+        mkdir -p bindings/nodejs
+        cat > bindings/nodejs/index.js << 'EOF'
+        /**
+         * Node.js bindings for webp-screenshot-rust
+         *
+         * Auto-generated bindings using ffi-napi
+         */
+
+        const ffi = require('ffi-napi');
+        const ref = require('ref-napi');
+        const path = require('path');
+
+        // Define types
+        const voidPtr = ref.refType(ref.types.void);
+
+        // Load library
+        const libPath = path.join(__dirname, '..', '..', 'target', 'release');
+        const libFile = process.platform === 'win32'
+            ? 'webp_screenshot_rust.dll'
+            : 'libwebp_screenshot_rust.so';
+
+        const lib = ffi.Library(path.join(libPath, libFile), {
+            'webp_screenshot_create': [voidPtr, []],
+            'webp_screenshot_destroy': ['void', [voidPtr]],
+            // Add more function definitions as needed
+        });
+
+        class WebPScreenshot {
+            constructor() {
+                this.handle = lib.webp_screenshot_create();
+                if (this.handle.isNull()) {
+                    throw new Error('Failed to create WebP screenshot instance');
+                }
+            }
+
+            destroy() {
+                if (this.handle && !this.handle.isNull()) {
+                    lib.webp_screenshot_destroy(this.handle);
+                    this.handle = null;
+                }
+            }
+        }
+
+        module.exports = { WebPScreenshot };
+        EOF
+
+        cat > bindings/nodejs/package.json << 'EOF'
+        {
+            "name": "webp-screenshot-rust-bindings",
+            "version": "1.0.0",
+            "description": "Node.js bindings for webp-screenshot-rust",
+            "main": "index.js",
+            "dependencies": {
+                "ffi-napi": "^4.0.0",
+                "ref-napi": "^3.0.0"
+            },
+            "keywords": ["screenshot", "webp", "rust", "native"]
+        }
+        EOF
+
+    - name: Package bindings
+      run: |
+        tar -czf language-bindings.tar.gz bindings/
+
+    - name: Upload bindings
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ needs.create-release.outputs.upload_url }}
+        asset_path: ./language-bindings.tar.gz
+        asset_name: language-bindings.tar.gz
+        asset_content_type: application/gzip

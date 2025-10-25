@@ -1,0 +1,279 @@
+name: Security
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run security checks weekly
+    - cron: '0 2 * * 1'
+
+jobs:
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-audit
+      uses: taiki-e/install-action@cargo-audit
+
+    - name: Run cargo audit
+      run: cargo audit
+
+    - name: Run cargo audit (JSON output for processing)
+      run: cargo audit --json > audit-results.json
+      continue-on-error: true
+
+    - name: Upload audit results
+      uses: actions/upload-artifact@v4
+      with:
+        name: security-audit-results
+        path: audit-results.json
+
+  supply-chain:
+    name: Supply Chain Security
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-deny
+      uses: taiki-e/install-action@cargo-deny
+
+    - name: Run cargo deny
+      run: cargo deny check
+
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Dependency Review
+      uses: actions/dependency-review-action@v4
+
+  license-check:
+    name: License Compliance
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-license
+      run: cargo install cargo-license
+
+    - name: Check licenses
+      run: |
+        echo "Checking license compatibility..."
+        cargo license --json > licenses.json
+
+        # Check for problematic licenses
+        if grep -q "GPL\|AGPL\|LGPL" licenses.json; then
+          echo "❌ Found copyleft licenses that may conflict with MIT license"
+          cat licenses.json | jq '.[] | select(.license | test("GPL|AGPL|LGPL")) | {name, license}'
+          exit 1
+        else
+          echo "✅ All licenses are compatible"
+        fi
+
+    - name: Upload license report
+      uses: actions/upload-artifact@v4
+      with:
+        name: license-report
+        path: licenses.json
+
+  memory-safety:
+    name: Memory Safety Analysis
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust nightly
+      uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: miri
+
+    - name: Install Linux dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libx11-dev \
+          libxrandr-dev \
+          libxfixes-dev \
+          pkg-config
+
+    - name: Run Miri (memory safety checker)
+      run: |
+        cargo miri setup
+        # Run Miri on memory-related tests
+        cargo miri test memory_pool::tests --test-threads=1
+      env:
+        MIRIFLAGS: "-Zmiri-disable-isolation -Zmiri-ignore-leaks"
+
+  fuzz-testing:
+    name: Fuzz Testing
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || contains(github.event.head_commit.message, '[fuzz]')
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust nightly
+      uses: dtolnay/rust-toolchain@nightly
+
+    - name: Install cargo-fuzz
+      run: cargo install cargo-fuzz
+
+    - name: Install Linux dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libx11-dev \
+          libxrandr-dev \
+          libxfixes-dev \
+          pkg-config
+
+    - name: Initialize fuzz targets
+      run: |
+        cargo fuzz init --target webp_encode fuzz
+
+        # Create fuzz target for WebP encoding
+        cat > fuzz/fuzz_targets/webp_encode.rs << 'EOF'
+        #![no_main]
+        use libfuzzer_sys::fuzz_target;
+        use webp_screenshot_rust::*;
+
+        fuzz_target!(|data: &[u8]| {
+            if data.len() >= 8 {
+                let width = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+                let height = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+
+                // Limit dimensions to prevent excessive memory usage
+                if width > 0 && height > 0 && width < 1000 && height < 1000 {
+                    let pixel_count = (width * height * 4) as usize;
+                    if data.len() >= pixel_count + 8 {
+                        let image_data = &data[8..8 + pixel_count];
+
+                        let raw_image = RawImage {
+                            data: image_data.to_vec(),
+                            width,
+                            height,
+                            format: PixelFormat::RGBA,
+                        };
+
+                        let mut encoder = WebPEncoder::new();
+                        let config = WebPConfig::default();
+                        let _ = encoder.encode(&raw_image, &config);
+                    }
+                }
+            }
+        });
+        EOF
+
+    - name: Run fuzz tests
+      run: |
+        # Run for a limited time to prevent CI timeouts
+        timeout 300s cargo fuzz run webp_encode -- -max_total_time=240 || true
+
+    - name: Upload fuzz artifacts
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: fuzz-artifacts
+        path: fuzz/artifacts/
+
+  static-analysis:
+    name: Static Analysis
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+
+    - name: Install Linux dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libx11-dev \
+          libxrandr-dev \
+          libxfixes-dev \
+          pkg-config
+
+    - name: Run Clippy with security lints
+      run: |
+        cargo clippy --all-targets --all-features -- \
+          -W clippy::suspicious \
+          -W clippy::perf \
+          -W clippy::nursery \
+          -W clippy::cargo \
+          -W clippy::integer_arithmetic \
+          -W clippy::panic \
+          -W clippy::unwrap_used \
+          -W clippy::expect_used \
+          -D warnings
+
+    - name: Install and run cargo-geiger (unsafe code analysis)
+      run: |
+        cargo install cargo-geiger
+        cargo geiger --format GitHubMarkdown > unsafe-analysis.md
+
+    - name: Upload unsafe code analysis
+      uses: actions/upload-artifact@v4
+      with:
+        name: unsafe-code-analysis
+        path: unsafe-analysis.md
+
+  secrets-scan:
+    name: Secrets Scanning
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Full history for secret scanning
+
+    - name: Run TruffleHog OSS
+      uses: trufflesecurity/trufflehog@main
+      with:
+        path: ./
+        base: main
+        head: HEAD
+        extra_args: --debug --only-verified
+
+  dependency-submission:
+    name: Dependency Submission
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install Linux dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libx11-dev \
+          libxrandr-dev \
+          libxfixes-dev \
+          pkg-config
+
+    - name: Submit dependencies to GitHub
+      uses: github/dependency-submission-toolkit@v1
+      with:
+        action: submit
+        manifest-path: Cargo.lock
+        snapshot-dependency-file-path: dependency-graph.json

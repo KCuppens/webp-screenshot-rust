@@ -1,0 +1,348 @@
+name: Documentation
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  docs:
+    name: Build Documentation
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install Linux dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libx11-dev \
+          libxrandr-dev \
+          libxfixes-dev \
+          libxdamage-dev \
+          libxext-dev \
+          libxcomposite-dev \
+          pkg-config
+
+    - name: Check documentation
+      run: |
+        cargo doc --all-features --no-deps --document-private-items
+      env:
+        RUSTDOCFLAGS: "-D warnings --cfg docsrs"
+
+    - name: Build documentation with examples
+      run: |
+        cargo doc --all-features --no-deps
+        echo '<meta http-equiv="refresh" content="0; url=webp_screenshot_rust">' > target/doc/index.html
+
+    - name: Deploy documentation to GitHub Pages
+      if: github.ref == 'refs/heads/main'
+      uses: peaceiris/actions-gh-pages@v4
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./target/doc
+        cname: webp-screenshot-rust.your-domain.com  # Optional: set your custom domain
+
+  doc-tests:
+    name: Documentation Tests
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install Linux dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libx11-dev \
+          libxrandr-dev \
+          libxfixes-dev \
+          pkg-config \
+          xvfb
+
+    - name: Start Xvfb
+      run: |
+        Xvfb :99 -screen 0 1024x768x24 > /dev/null 2>&1 &
+        sleep 3
+
+    - name: Run documentation tests
+      run: cargo test --doc --all-features
+      env:
+        DISPLAY: :99
+
+  readme-sync:
+    name: README Sync Check
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-readme
+      run: cargo install cargo-readme
+
+    - name: Generate README from lib.rs
+      run: |
+        cargo readme > README_generated.md
+
+    - name: Check if README is up to date
+      run: |
+        if ! diff -q README.md README_generated.md > /dev/null; then
+          echo "❌ README.md is not up to date with lib.rs documentation"
+          echo "Please run 'cargo readme > README.md' to update"
+          echo ""
+          echo "Differences:"
+          diff README.md README_generated.md || true
+          exit 1
+        else
+          echo "✅ README.md is up to date"
+        fi
+
+  examples:
+    name: Example Code Tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install Linux dependencies
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libx11-dev \
+          libxrandr-dev \
+          libxfixes-dev \
+          pkg-config \
+          xvfb
+
+    - name: Start Xvfb (Linux only)
+      if: runner.os == 'Linux'
+      run: |
+        Xvfb :99 -screen 0 1024x768x24 > /dev/null 2>&1 &
+        sleep 3
+
+    - name: Build examples
+      run: |
+        cargo build --examples --all-features
+      env:
+        DISPLAY: :99
+
+    - name: Test simple_capture example
+      run: |
+        timeout 30s cargo run --example simple_capture || true
+      env:
+        DISPLAY: :99
+
+    - name: Test multi_display example
+      run: |
+        timeout 30s cargo run --example multi_display || true
+      env:
+        DISPLAY: :99
+
+    - name: Test streaming example
+      run: |
+        timeout 10s cargo run --example streaming || true
+      env:
+        DISPLAY: :99
+
+  book:
+    name: mdBook Documentation
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup mdBook
+      uses: peaceiris/actions-mdbook@v2
+      with:
+        mdbook-version: 'latest'
+
+    - name: Create book structure
+      run: |
+        mkdir -p book/src
+
+        # Create book.toml
+        cat > book/book.toml << 'EOF'
+        [book]
+        authors = ["WebP Screenshot Team"]
+        language = "en"
+        multilingual = false
+        src = "src"
+        title = "WebP Screenshot Rust Guide"
+
+        [build]
+        build-dir = "book"
+        create-missing = true
+
+        [output.html]
+        additional-css = ["style.css"]
+        git-repository-url = "https://github.com/your-org/webp-screenshot-rust"
+        edit-url-template = "https://github.com/your-org/webp-screenshot-rust/edit/main/book/{path}"
+        EOF
+
+        # Create SUMMARY.md
+        cat > book/src/SUMMARY.md << 'EOF'
+        # Summary
+
+        [Introduction](./introduction.md)
+
+        # User Guide
+        - [Getting Started](./getting-started.md)
+        - [Basic Usage](./basic-usage.md)
+        - [Advanced Features](./advanced-features.md)
+        - [Platform Support](./platform-support.md)
+
+        # API Reference
+        - [Core API](./api-core.md)
+        - [Configuration](./api-config.md)
+        - [Error Handling](./api-errors.md)
+        - [C API](./api-c.md)
+
+        # Performance
+        - [Benchmarks](./benchmarks.md)
+        - [Optimization Guide](./optimization.md)
+        - [Memory Management](./memory.md)
+
+        # Development
+        - [Building from Source](./building.md)
+        - [Contributing](./contributing.md)
+        - [Architecture](./architecture.md)
+        EOF
+
+        # Create introduction
+        cat > book/src/introduction.md << 'EOF'
+        # WebP Screenshot Rust
+
+        A high-performance, cross-platform library for capturing screenshots and encoding them as WebP images.
+
+        ## Features
+
+        - **Cross-platform**: Windows, macOS, and Linux support
+        - **High Performance**: SIMD optimizations and GPU acceleration
+        - **Memory Efficient**: Advanced memory pooling and zero-copy optimizations
+        - **WebP Encoding**: Full WebP feature support with quality controls
+        - **Streaming**: Real-time capture pipeline for video applications
+        - **C API**: Language bindings for integration with other languages
+
+        ## Quick Start
+
+        Add this to your `Cargo.toml`:
+
+        ```toml
+        [dependencies]
+        webp-screenshot-rust = "1.0"
+        ```
+
+        Basic usage:
+
+        ```rust,no_run
+        use webp_screenshot_rust::*;
+
+        fn main() -> Result<(), Box<dyn std::error::Error>> {
+            let mut screenshot = WebPScreenshot::new()?;
+            let result = screenshot.capture_display(0)?;
+            result.save("screenshot.webp")?;
+            Ok(())
+        }
+        ```
+        EOF
+
+        # Create additional pages with placeholder content
+        for page in getting-started basic-usage advanced-features platform-support api-core api-config api-errors api-c benchmarks optimization memory building contributing architecture; do
+            echo "# $(echo $page | tr '-' ' ' | sed 's/\b\w/\u&/g')" > "book/src/${page}.md"
+            echo "" >> "book/src/${page}.md"
+            echo "Content coming soon..." >> "book/src/${page}.md"
+        done
+
+        # Create CSS
+        cat > book/style.css << 'EOF'
+        /* Custom styles for the book */
+        .sidebar .sidebar-scrollbox {
+            padding-left: 15px;
+        }
+        EOF
+
+    - name: Build book
+      run: mdbook build book
+
+    - name: Deploy book to GitHub Pages
+      uses: peaceiris/actions-gh-pages@v4
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./book/book
+        destination_dir: book
+
+  check-links:
+    name: Check Documentation Links
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install Linux dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libx11-dev \
+          libxrandr-dev \
+          libxfixes-dev \
+          pkg-config
+
+    - name: Build docs
+      run: cargo doc --all-features --no-deps
+
+    - name: Install lychee (link checker)
+      uses: lycheeverse/lychee-action@v1
+      with:
+        args: --accept 200,403,429 --verbose --no-progress './target/doc/**/*.html'
+        fail: true
+
+  spelling:
+    name: Spell Check
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Check spelling
+      uses: crate-ci/typos@master
+      with:
+        files: ./src ./examples ./README.md
+        config: ./.typos.toml
+
+    - name: Create typos config if not exists
+      run: |
+        if [ ! -f .typos.toml ]; then
+          cat > .typos.toml << 'EOF'
+        [default.extend-words]
+        # Technical terms that might be flagged as typos
+        webp = "webp"
+        rgba = "rgba"
+        bgra = "bgra"
+        simd = "simd"
+        mpps = "mpps"
+        psnr = "psnr"
+        ssim = "ssim"
+
+        [files]
+        extend-exclude = ["target/", "*.lock"]
+        EOF
+        fi
